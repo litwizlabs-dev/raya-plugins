@@ -326,7 +326,9 @@ async def main() -> int:
 
     from livekit.plugins.bakbak import TTS
 
-    text = (args.text or os.environ.get("BAKBAK_SMOKE_TEXT") or _DEFAULT_SMOKE_TEXT).strip()
+    text = (
+        args.text or os.environ.get("BAKBAK_SMOKE_TEXT") or _DEFAULT_SMOKE_TEXT
+    ).strip()
     if not text:
         print("Text is empty (use --text / -t or BAKBAK_SMOKE_TEXT).", file=sys.stderr)
         return 1

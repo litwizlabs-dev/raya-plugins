@@ -9,8 +9,8 @@ import os
 import time
 import wave
 import weakref
-from dataclasses import dataclass, replace
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional, Union
 
 import aiohttp
@@ -32,6 +32,7 @@ from livekit.agents.types import (
 )
 from livekit.agents.tts import SentenceStreamPacer
 from livekit.agents.utils import is_given
+from livekit.agents.metrics import TTSMetrics
 
 from .log import logger
 
@@ -68,7 +69,7 @@ try:
     import numpy as np
     _NUMPY_AVAILABLE = True
 except ImportError:
-    np = None
+    np = None  # type: ignore[assignment]
     _NUMPY_AVAILABLE = False
 
 
@@ -290,6 +291,7 @@ class TTS(tts.TTS):
         )
         self._voices_cache: Optional[list[dict[str, Any]]] = None
         self._voices_cache_at: float = 0.0
+        self._voices_lock = asyncio.Lock()
 
     # ── Public properties ────────────────────────────────────────────────────
 
@@ -343,39 +345,69 @@ class TTS(tts.TTS):
         self._streams.add(s)
         return s
 
+    def update_options(
+        self,
+        *,
+        voice_id: Optional[str] = None,
+        language: Optional[str] = None,
+        model: Optional[str] = None,
+        speed: Optional[float] = None,
+        sample_rate: Optional[SampleRate] = None,
+        rest_codec: Optional[BakbakCodec] = None,
+    ) -> None:
+        """Update TTS options at runtime without reconstructing the object.
+
+        Only the provided (non-None) arguments are changed. Useful for
+        swapping voice or language mid-session.
+        """
+        if speed is not None and not 0.5 <= speed <= 1.5:
+            raise ValueError(f"speed must be between 0.5 and 1.5, got {speed}")
+        self._opts = replace(
+            self._opts,
+            **{k: v for k, v in {
+                "voice_id": voice_id,
+                "language": language,
+                "model": model,
+                "speed": speed,
+                "sample_rate": sample_rate,
+                "rest_codec": rest_codec,
+            }.items() if v is not None},
+        )
+
     async def list_voices(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
-        """Return available voices using a 1-hour in-memory cache.
+        """Return available voices, using a 1-hour in-memory cache.
 
         Args:
             force_refresh: Bypass the cache and fetch from the API.
         """
-        now = time.monotonic()
-        if (
-            not force_refresh
-            and self._voices_cache is not None
-            and now - self._voices_cache_at < _VOICES_CACHE_TTL
-        ):
-            return self._voices_cache
+        async with self._voices_lock:
+            now = time.monotonic()
+            if (
+                not force_refresh
+                and self._voices_cache is not None
+                and now - self._voices_cache_at < _VOICES_CACHE_TTL
+            ):
+                return self._voices_cache
 
-        opts = self._opts
-        try:
-            async with self.ensure_session().get(
-                opts.url(_PATH_VOICES),
-                headers=opts.auth_headers,
-                timeout=aiohttp.ClientTimeout(total=30, sock_connect=10),
-            ) as resp:
-                await _raise_for_status(resp)
-                data = await resp.json()
-        except asyncio.TimeoutError:
-            raise APITimeoutError() from None
-        except aiohttp.ClientError as exc:
-            raise APIConnectionError() from exc
+            opts = self._opts
+            try:
+                async with self.ensure_session().get(
+                    opts.url(_PATH_VOICES),
+                    headers=opts.auth_headers,
+                    timeout=aiohttp.ClientTimeout(total=30, sock_connect=10),
+                ) as resp:
+                    await _raise_for_status(resp)
+                    data = await resp.json()
+            except asyncio.TimeoutError:
+                raise APITimeoutError() from None
+            except aiohttp.ClientError as exc:
+                raise APIConnectionError() from exc
 
-        voices: list[dict[str, Any]] = data if isinstance(data, list) else data.get("voices", [])
-        self._voices_cache = voices
-        self._voices_cache_at = now
-        logger.debug("Bakbak voices cache refreshed (%d voices)", len(voices))
-        return voices
+            voices: list[dict[str, Any]] = data if isinstance(data, list) else data.get("voices", [])
+            self._voices_cache = voices
+            self._voices_cache_at = now
+            logger.debug("Bakbak voices cache refreshed (%d voices)", len(voices))
+            return voices
 
     async def aclose(self) -> None:
         if self._streams:
@@ -407,6 +439,7 @@ class ChunkedStream(tts.ChunkedStream):
             sock_connect=self._conn_options.timeout,
             sock_read=self._conn_options.timeout,
         )
+        start_time = time.perf_counter()
         try:
             async with await _post_with_retry(
                 self._tts.ensure_session(),
@@ -422,6 +455,9 @@ class ChunkedStream(tts.ChunkedStream):
         except aiohttp.ClientError as exc:
             raise APIConnectionError() from exc
 
+        request_id = utils.shortuuid()
+        duration = time.perf_counter() - start_time
+
         if opts.rest_codec == "wav":
             pcm, sample_rate = _pcm_from_wav(body, opts.sample_rate)
         else:
@@ -430,7 +466,7 @@ class ChunkedStream(tts.ChunkedStream):
             pcm, sample_rate = body, opts.sample_rate
 
         output_emitter.initialize(
-            request_id=utils.shortuuid(),
+            request_id=request_id,
             sample_rate=int(sample_rate),
             num_channels=1,
             mime_type="audio/pcm",
@@ -443,6 +479,21 @@ class ChunkedStream(tts.ChunkedStream):
             for i in range(0, pcm_len, _PCM_CHUNK_BYTES):
                 output_emitter.push(bytes(pcm[i : i + _PCM_CHUNK_BYTES]))
         output_emitter.flush()
+
+        self._tts.emit(
+            "metrics_collected",
+            TTSMetrics(
+                timestamp=time.time(),
+                request_id=request_id,
+                ttfb=duration,
+                duration=duration,
+                audio_duration=pcm_len / (int(sample_rate) * 2),  # s16le = 2 bytes/sample
+                cancelled=False,
+                label=self._tts.label,
+                characters_count=len(self._input_text),
+                streamed=False,
+            ),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -503,19 +554,39 @@ class SynthesizeStream(tts.SynthesizeStream):
         opts = self._opts
         session = self._tts.ensure_session()
         url = opts.url(_PATH_STREAM)
+        total_chars = 0
 
         async for ev in sent_stream:
             text = (ev.token or "").strip()
             if not text:
                 continue
             self._mark_started()
-            await _stream_utterance(
+            start_time = time.perf_counter()
+            request_id = utils.shortuuid()
+            ttfb = await _stream_utterance(
                 session=session,
                 url=url,
                 headers=opts.auth_headers,
                 payload=opts.request_json(text, codec="wav"),
                 output_emitter=output_emitter,
                 timeout=timeout,
+                request_id=request_id,
+            )
+            duration = time.perf_counter() - start_time
+            total_chars += len(text)
+            self._tts.emit(
+                "metrics_collected",
+                TTSMetrics(
+                    timestamp=time.time(),
+                    request_id=request_id,
+                    ttfb=ttfb,
+                    duration=duration,
+                    audio_duration=0.0,
+                    cancelled=False,
+                    label=self._tts.label,
+                    characters_count=len(text),
+                    streamed=True,
+                ),
             )
 
 
@@ -532,7 +603,12 @@ async def _stream_utterance(
     payload: dict[str, Any],
     output_emitter: tts.AudioEmitter,
     timeout: aiohttp.ClientTimeout,
-) -> None:
+    request_id: str,
+) -> float:
+    """POST a single utterance to the streaming endpoint and consume SSE.
+
+    Returns the time-to-first-byte (seconds) for metrics.
+    """
     try:
         async with await _post_with_retry(
             session, url, headers=headers, payload=payload, timeout=timeout
@@ -541,7 +617,8 @@ async def _stream_utterance(
             ct = resp.content_type or ""
             if ct and "text/event-stream" not in ct:
                 logger.debug("unexpected stream content-type: %s", ct)
-            await _consume_sse(resp, output_emitter)
+            ttfb = await _consume_sse(resp, output_emitter)
+            return ttfb
     except (APITimeoutError, APIConnectionError, APIStatusError):
         raise
     except aiohttp.ClientError as exc:
@@ -551,15 +628,15 @@ async def _stream_utterance(
 async def _consume_sse(
     resp: aiohttp.ClientResponse,
     output_emitter: tts.AudioEmitter,
-) -> None:
-    """Read an SSE response using ``readline`` (correct framing vs raw chunk iteration)."""
-    await _consume_sse_readline(resp.content.readline, output_emitter)
+) -> float:
+    """Read an SSE response using ``readline`` and return time-to-first-byte."""
+    return await _consume_sse_readline(resp.content.readline, output_emitter)
 
 
 async def _consume_sse_readline(
     readline: Callable[[], Awaitable[bytes]],
     output_emitter: tts.AudioEmitter,
-) -> None:
+) -> float:
     """Read an SSE response line-by-line and dispatch decoded PCM chunks.
 
     Handles two SSE payload styles from Bakbak:
@@ -567,8 +644,13 @@ async def _consume_sse_readline(
     - Style B: no ``event:`` field, ``data: {"type": "chunk", ...}`` (type key as discriminator)
 
     Skips SSE comment lines (``:`` …) per the SSE spec.
+    Returns time-to-first-byte (seconds) measured from entry to first chunk push.
     """
-    event, buf = None, []
+    event: Optional[str] = None
+    buf: list[str] = []
+    ttfb: Optional[float] = None
+    start = time.perf_counter()
+
     while True:
         line_b = await readline()
         if not line_b:
@@ -578,7 +660,10 @@ async def _consume_sse_readline(
             continue
         if line == "":
             if buf:
+                first_chunk = ttfb is None and _is_chunk_event(event, buf)
                 await _handle_sse_event(event, "\n".join(buf), output_emitter)
+                if first_chunk:
+                    ttfb = time.perf_counter() - start
             event, buf = None, []
         elif line.startswith("event:"):
             if buf:
@@ -588,8 +673,24 @@ async def _consume_sse_readline(
             buf.append(line[5:].lstrip())
         else:
             buf.append(line)
+
     if buf:
         await _handle_sse_event(event, "\n".join(buf), output_emitter)
+
+    return ttfb if ttfb is not None else time.perf_counter() - start
+
+
+def _is_chunk_event(event: Optional[str], buf: list[str]) -> bool:
+    """Return True if this SSE event looks like an audio chunk (for TTFB tracking)."""
+    if event == "chunk":
+        return True
+    if event is None and buf:
+        try:
+            payload = json.loads("\n".join(buf))
+            return isinstance(payload, dict) and payload.get("type") == "chunk"
+        except json.JSONDecodeError:
+            pass
+    return False
 
 
 async def _handle_sse_event(
@@ -612,7 +713,7 @@ async def _handle_sse_event(
         ) from exc
 
     # Resolve the effective event type: prefer the SSE event: field (Style A),
-    # fall back to payload [ "type"] (Style B).
+    # fall back to payload["type"] (Style B).
     etype = ev or (payload.get("type") if isinstance(payload, dict) else None)
 
     if etype == "chunk":
@@ -620,37 +721,15 @@ async def _handle_sse_event(
         if not isinstance(b64, str):
             logger.debug("SSE 'chunk' event missing 'data' string field; skipping")
             return
-        step_time = payload.get("step_time") if isinstance(payload, dict) else None
-        status_code = payload.get("status_code") if isinstance(payload, dict) else None
-        if step_time is not None or status_code is not None:
-            logger.debug(
-                "Bakbak SSE chunk: step_time=%r status_code=%r",
-                step_time,
-                status_code,
-            )
         try:
             f32 = base64.b64decode(b64)
         except Exception as exc:
             raise APIError(f"invalid base64 in SSE chunk: {exc}", retryable=False) from exc
         output_emitter.push(_f32le_to_s16le(f32))
     elif etype == "done":
-        if isinstance(payload, dict) and payload.get("done") is not True:
-            logger.debug(
-                "Bakbak SSE 'done' event without done=true: %s",
-                payload,
-            )
+        pass
     elif etype == "error":
-        if isinstance(payload, dict):
-            detail = payload.get("detail")
-            msg = payload.get("message")
-            if isinstance(detail, str):
-                err_text = detail
-            elif isinstance(detail, list) and detail:
-                err_text = str(detail[0])
-            else:
-                err_text = msg or raw
-        else:
-            err_text = raw
-        raise APIError(f"Bakbak stream error: {err_text}", retryable=False)
+        msg = (payload.get("message") or payload.get("detail") or raw) if isinstance(payload, dict) else raw
+        raise APIError(f"Bakbak stream error: {msg}", retryable=False)
     else:
         logger.debug("unknown Bakbak SSE event '%s'; ignoring", etype)

@@ -49,7 +49,9 @@ async def test_sse_style_a_multiline_data_line() -> None:
         json.dumps(chunk_json).encode() + b"\n",
         b"\n",
         b"event: done\n",
-        b"data: " + json.dumps({"type": "done", "status_code": 200, "done": True}).encode() + b"\n",
+        b"data: "
+        + json.dumps({"type": "done", "status_code": 200, "done": True}).encode()
+        + b"\n",
         b"\n",
     ]
     emitter = MagicMock()
@@ -63,9 +65,7 @@ async def test_sse_style_a_multiline_data_line() -> None:
 async def test_sse_style_b_type_in_json_only() -> None:
     b64 = _b64_f32_zero()
     lines = [
-        b"data: "
-        + json.dumps({"type": "chunk", "data": b64}).encode()
-        + b"\n",
+        b"data: " + json.dumps({"type": "chunk", "data": b64}).encode() + b"\n",
         b"\n",
         b"data: " + json.dumps({"type": "done", "done": True}).encode() + b"\n",
         b"\n",
@@ -96,7 +96,9 @@ async def test_sse_skips_comment_colon_ping() -> None:
 async def test_sse_error_event_raises() -> None:
     lines = [
         b"event: error\n",
-        b"data: " + json.dumps({"type": "error", "detail": "synthesis failed"}).encode() + b"\n",
+        b"data: "
+        + json.dumps({"type": "error", "detail": "synthesis failed"}).encode()
+        + b"\n",
         b"\n",
     ]
     emitter = MagicMock()
