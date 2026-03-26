@@ -51,6 +51,28 @@ uv pip install -e .      # runtime only
 uv pip install -e ".[dev]"
 ```
 
+#### uv: “`VIRTUAL_ENV` … does not match the project environment path `.venv`”
+
+That happens when your shell’s active venv is **not** this package’s `.venv` — for example `VIRTUAL_ENV` points at the **repo root** (`raya-plugins/.venv`) while you run `uv` from `python/livekit-plugins-bakbak`, where uv expects `python/livekit-plugins-bakbak/.venv`.
+
+**Option A — use this folder’s venv (recommended):**
+
+```bash
+deactivate   # if some other venv is active
+cd python/livekit-plugins-bakbak
+source .venv/bin/activate
+uv pip install -e ".[dev]"   # or: uv pip install -e .
+```
+
+**Option B — keep the venv you already have active** and install into it:
+
+```bash
+cd python/livekit-plugins-bakbak
+uv pip install -e ".[dev]" --active
+```
+
+If you no longer need a root-level `.venv`, delete it so you don’t activate it by mistake.
+
 ### 2. Unit tests (no API key)
 
 ```bash
