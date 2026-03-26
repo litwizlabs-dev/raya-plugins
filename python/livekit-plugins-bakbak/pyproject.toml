@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "livekit-plugins-bakbak"
+dynamic = ["version"]
+description = "Agent Framework plugin for Bakbak (Raya) text-to-speech."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10.0"
+authors = [{ name = "Raya" }]
+keywords = [
+    "voice",
+    "ai",
+    "realtime",
+    "audio",
+    "video",
+    "livekit",
+    "bakbak",
+    "tts",
+    "raya",
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "livekit-agents>=1.5.1",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.urls]
+Documentation = "https://docs.litwizlabs.com/documentation/tts-overview"
+Website = "https://hub.getraya.app"
+
+[tool.hatch.version]
+path = "livekit/plugins/bakbak/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["livekit"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/livekit"]
