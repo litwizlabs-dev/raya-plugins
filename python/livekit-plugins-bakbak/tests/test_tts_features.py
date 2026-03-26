@@ -60,7 +60,12 @@ def api_key(monkeypatch: pytest.MonkeyPatch) -> str:
 
 @pytest.fixture
 def tts_engine(api_key: str) -> TTS:
-    return TTS(voice_id="voice_1", language="hi", api_key=api_key, base_url="https://test.example")
+    return TTS(
+        voice_id="voice_1",
+        language="hi",
+        api_key=api_key,
+        base_url="https://test.example",
+    )
 
 
 @pytest.mark.asyncio

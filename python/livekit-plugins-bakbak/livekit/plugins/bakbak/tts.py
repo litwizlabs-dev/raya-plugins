@@ -55,7 +55,7 @@ _PCM_CHUNK_BYTES = 32_000
 
 # Retry / backoff
 _MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 1.0   # seconds; doubled each attempt
+_RETRY_BASE_DELAY = 1.0  # seconds; doubled each attempt
 
 # Voices cache TTL
 _VOICES_CACHE_TTL = 3600  # 1 hour
@@ -67,6 +67,7 @@ SampleRate = Literal[8000, 16000, 22050, 24000]
 # numpy optional — strongly recommended for fast PCM conversion
 try:
     import numpy as np
+
     _NUMPY_AVAILABLE = True
 except ImportError:
     np = None  # type: ignore[assignment]
@@ -79,13 +80,21 @@ except ImportError:
 
 
 def _resolve_base_url(explicit: Optional[str]) -> str:
-    candidates = [explicit, os.environ.get("BAKBAK_BASE_URL"), os.environ.get("RAYA_API_BASE_URL")]
+    candidates = [
+        explicit,
+        os.environ.get("BAKBAK_BASE_URL"),
+        os.environ.get("RAYA_API_BASE_URL"),
+    ]
     value = next((v.strip() for v in candidates if v and v.strip()), None)
     return value.strip("/ \t\n") if value else DEFAULT_BASE_URL.rstrip("/")
 
 
 def _resolve_api_key(explicit: Optional[str]) -> str:
-    candidates = [explicit, os.environ.get("BAKBAK_API_KEY"), os.environ.get("RAYA_API_KEY")]
+    candidates = [
+        explicit,
+        os.environ.get("BAKBAK_API_KEY"),
+        os.environ.get("RAYA_API_KEY"),
+    ]
     value = next((v.strip() for v in candidates if v and v.strip()), None)
     if not value:
         raise ValueError(
@@ -97,13 +106,17 @@ def _resolve_api_key(explicit: Optional[str]) -> str:
 def _f32le_to_s16le(data: bytes) -> bytes:
     """Convert raw F32LE PCM bytes to S16LE. Uses numpy when available."""
     if len(data) % 4:
-        raise APIError(f"F32LE PCM length {len(data)} is not a multiple of 4", retryable=False)
+        raise APIError(
+            f"F32LE PCM length {len(data)} is not a multiple of 4", retryable=False
+        )
     if _NUMPY_AVAILABLE:
         f32 = np.frombuffer(data, dtype=np.float32)
         return (np.clip(f32, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
     floats = array.array("f")
     floats.frombytes(data)
-    return array.array("h", (int(max(-1.0, min(1.0, x)) * 32767) for x in floats)).tobytes()
+    return array.array(
+        "h", (int(max(-1.0, min(1.0, x)) * 32767) for x in floats)
+    ).tobytes()
 
 
 def _pcm_from_wav(body: bytes, configured_rate: int) -> tuple[memoryview, int]:
@@ -112,13 +125,20 @@ def _pcm_from_wav(body: bytes, configured_rate: int) -> tuple[memoryview, int]:
         with wave.open(io.BytesIO(body), "rb") as wf:
             ch, sr, sw = wf.getnchannels(), wf.getframerate(), wf.getsampwidth()
             if ch != 1:
-                raise APIError(f"expected mono WAV from Bakbak, got {ch} channels", retryable=False)
+                raise APIError(
+                    f"expected mono WAV from Bakbak, got {ch} channels", retryable=False
+                )
             if sw != 2:
-                raise APIError(f"expected 16-bit WAV from Bakbak, got sample width {sw}", retryable=False)
+                raise APIError(
+                    f"expected 16-bit WAV from Bakbak, got sample width {sw}",
+                    retryable=False,
+                )
             if sr != configured_rate:
                 logger.warning(
                     "Bakbak WAV sample rate %d differs from configured %d; using %d",
-                    sr, configured_rate, sr,
+                    sr,
+                    configured_rate,
+                    sr,
                 )
             return memoryview(wf.readframes(wf.getnframes())), sr
     except wave.Error as exc:
@@ -144,7 +164,9 @@ async def _raise_for_status(resp: aiohttp.ClientResponse) -> None:
             status_code=429,
             body=detail,
         )
-    raise APIStatusError(message=text or resp.reason, status_code=resp.status, body=detail)
+    raise APIStatusError(
+        message=text or resp.reason, status_code=resp.status, body=detail
+    )
 
 
 async def _post_with_retry(
@@ -159,13 +181,18 @@ async def _post_with_retry(
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
-            resp = await session.post(url, json=payload, headers=headers, timeout=timeout)
+            resp = await session.post(
+                url, json=payload, headers=headers, timeout=timeout
+            )
             if resp.status in (429, 500, 502, 503, 504) and attempt < _MAX_RETRIES - 1:
                 await resp.release()
-                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                delay = _RETRY_BASE_DELAY * (2**attempt)
                 logger.warning(
                     "Bakbak request got %d; retrying in %.1fs (attempt %d/%d)",
-                    resp.status, delay, attempt + 1, _MAX_RETRIES,
+                    resp.status,
+                    delay,
+                    attempt + 1,
+                    _MAX_RETRIES,
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -175,10 +202,13 @@ async def _post_with_retry(
         except aiohttp.ClientError as exc:
             last_exc = exc
             if attempt < _MAX_RETRIES - 1:
-                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                delay = _RETRY_BASE_DELAY * (2**attempt)
                 logger.warning(
                     "Bakbak connection error: %s; retrying in %.1fs (attempt %d/%d)",
-                    exc, delay, attempt + 1, _MAX_RETRIES,
+                    exc,
+                    delay,
+                    attempt + 1,
+                    _MAX_RETRIES,
                 )
                 await asyncio.sleep(delay)
             continue
@@ -208,7 +238,9 @@ class _TTSOptions:
     def url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
 
-    def request_json(self, text: str, *, codec: Optional[BakbakCodec] = None) -> dict[str, Any]:
+    def request_json(
+        self, text: str, *, codec: Optional[BakbakCodec] = None
+    ) -> dict[str, Any]:
         return {
             "text": text,
             "voice_id": self.voice_id,
@@ -286,7 +318,8 @@ class TTS(tts.TTS):
             tokenizer if is_given(tokenizer) else tokenize.blingfire.SentenceTokenizer()
         )
         self._stream_pacer = (
-            text_pacing if isinstance(text_pacing, SentenceStreamPacer)
+            text_pacing
+            if isinstance(text_pacing, SentenceStreamPacer)
             else (SentenceStreamPacer() if text_pacing is True else None)
         )
         self._voices_cache: Optional[list[dict[str, Any]]] = None
@@ -364,14 +397,18 @@ class TTS(tts.TTS):
             raise ValueError(f"speed must be between 0.5 and 1.5, got {speed}")
         self._opts = replace(
             self._opts,
-            **{k: v for k, v in {
-                "voice_id": voice_id,
-                "language": language,
-                "model": model,
-                "speed": speed,
-                "sample_rate": sample_rate,
-                "rest_codec": rest_codec,
-            }.items() if v is not None},
+            **{
+                k: v
+                for k, v in {
+                    "voice_id": voice_id,
+                    "language": language,
+                    "model": model,
+                    "speed": speed,
+                    "sample_rate": sample_rate,
+                    "rest_codec": rest_codec,
+                }.items()
+                if v is not None
+            },
         )
 
     async def list_voices(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
@@ -403,7 +440,9 @@ class TTS(tts.TTS):
             except aiohttp.ClientError as exc:
                 raise APIConnectionError() from exc
 
-            voices: list[dict[str, Any]] = data if isinstance(data, list) else data.get("voices", [])
+            voices: list[dict[str, Any]] = (
+                data if isinstance(data, list) else data.get("voices", [])
+            )
             self._voices_cache = voices
             self._voices_cache_at = now
             logger.debug("Bakbak voices cache refreshed (%d voices)", len(voices))
@@ -462,7 +501,9 @@ class ChunkedStream(tts.ChunkedStream):
             pcm, sample_rate = _pcm_from_wav(body, opts.sample_rate)
         else:
             if opts.rest_codec == "pcm" and len(body) % 2:
-                raise APIError("PCM body length is not a multiple of 2", retryable=False)
+                raise APIError(
+                    "PCM body length is not a multiple of 2", retryable=False
+                )
             pcm, sample_rate = body, opts.sample_rate
 
         output_emitter.initialize(
@@ -487,7 +528,8 @@ class ChunkedStream(tts.ChunkedStream):
                 request_id=request_id,
                 ttfb=duration,
                 duration=duration,
-                audio_duration=pcm_len / (int(sample_rate) * 2),  # s16le = 2 bytes/sample
+                audio_duration=pcm_len
+                / (int(sample_rate) * 2),  # s16le = 2 bytes/sample
                 cancelled=False,
                 label=self._tts.label,
                 characters_count=len(self._input_text),
@@ -712,8 +754,6 @@ async def _handle_sse_event(
             retryable=False,
         ) from exc
 
-    # Resolve the effective event type: prefer the SSE event: field (Style A),
-    # fall back to payload["type"] (Style B).
     etype = ev or (payload.get("type") if isinstance(payload, dict) else None)
 
     if etype == "chunk":
@@ -724,12 +764,18 @@ async def _handle_sse_event(
         try:
             f32 = base64.b64decode(b64)
         except Exception as exc:
-            raise APIError(f"invalid base64 in SSE chunk: {exc}", retryable=False) from exc
+            raise APIError(
+                f"invalid base64 in SSE chunk: {exc}", retryable=False
+            ) from exc
         output_emitter.push(_f32le_to_s16le(f32))
     elif etype == "done":
         pass
     elif etype == "error":
-        msg = (payload.get("message") or payload.get("detail") or raw) if isinstance(payload, dict) else raw
+        msg = (
+            (payload.get("message") or payload.get("detail") or raw)
+            if isinstance(payload, dict)
+            else raw
+        )
         raise APIError(f"Bakbak stream error: {msg}", retryable=False)
     else:
         logger.debug("unknown Bakbak SSE event '%s'; ignoring", etype)
