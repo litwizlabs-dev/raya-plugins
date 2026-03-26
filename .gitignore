@@ -212,3 +212,10 @@ __marimo__/
 # Bakbak smoke test generated audio (keep folder via .gitkeep)
 python/livekit-plugins-bakbak/scripts/output/*
 !python/livekit-plugins-bakbak/scripts/output/.gitkeep
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local uv lockfile (optional; package is distributed via pyproject/hatch)
+python/livekit-plugins-bakbak/uv.lock

@@ -73,7 +73,9 @@ def _resolve_base_url() -> str:
     return "https://hub.getraya.app".rstrip("/")
 
 
-async def _fetch_voices(session: aiohttp.ClientSession, base_url: str, api_key: str) -> list[dict]:
+async def _fetch_voices(
+    session: aiohttp.ClientSession, base_url: str, api_key: str
+) -> list[dict]:
     url = f"{base_url}/v1/voices"
     headers = {"X-API-Key": api_key}
     async with session.get(url, headers=headers) as resp:
@@ -125,7 +127,9 @@ async def main() -> int:
     )
     args = parser.parse_args()
 
-    output_dir = (args.output_dir if args.output_dir is not None else _default_output_dir()).resolve()
+    output_dir = (
+        args.output_dir if args.output_dir is not None else _default_output_dir()
+    ).resolve()
 
     if args.clean:
         return clean_output_dir(output_dir)
@@ -153,7 +157,9 @@ async def main() -> int:
 
         voice_id = (args.voice or os.environ.get("BAKBAK_VOICE_ID") or "").strip()
         language = args.language or os.environ.get("BAKBAK_LANGUAGE")
-        language = language.strip() if isinstance(language, str) and language.strip() else None
+        language = (
+            language.strip() if isinstance(language, str) and language.strip() else None
+        )
 
         if not voice_id:
             try:

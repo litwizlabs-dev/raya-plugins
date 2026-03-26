@@ -97,9 +97,7 @@ def _f32le_to_s16le(data: bytes) -> bytes:
     """Convert raw float-32 LE PCM bytes to signed-16 LE PCM bytes."""
     n = len(data)
     if n % 4:
-        raise APIError(
-            f"F32LE PCM length {n} is not a multiple of 4", retryable=False
-        )
+        raise APIError(f"F32LE PCM length {n} is not a multiple of 4", retryable=False)
     floats = array.array("f")
     floats.frombytes(data)
     # Clamp then scale in one pass — avoids a second allocation
@@ -124,7 +122,8 @@ def _pcm_from_wav(body: bytes, configured_rate: int) -> tuple[bytes, int]:
                 )
             if sw != 2:
                 raise APIError(
-                    f"expected 16-bit WAV from Bakbak, got sample width {sw}", retryable=False
+                    f"expected 16-bit WAV from Bakbak, got sample width {sw}",
+                    retryable=False,
                 )
             if sr != configured_rate:
                 logger.warning(
@@ -151,7 +150,9 @@ async def _raise_for_status(resp: aiohttp.ClientResponse) -> None:
             text = str(parsed["detail"])
     except json.JSONDecodeError:
         pass
-    raise APIStatusError(message=text or resp.reason, status_code=resp.status, body=detail)
+    raise APIStatusError(
+        message=text or resp.reason, status_code=resp.status, body=detail
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -178,7 +179,9 @@ class _TTSOptions:
     def url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
 
-    def request_json(self, text: str, *, codec: Optional[BakbakCodec] = None) -> dict[str, Any]:
+    def request_json(
+        self, text: str, *, codec: Optional[BakbakCodec] = None
+    ) -> dict[str, Any]:
         return {
             "text": text,
             "voice_id": self.voice_id,
@@ -298,7 +301,10 @@ class TTS(tts.TTS):
     # ── LiveKit TTS interface ────────────────────────────────────────────────
 
     def synthesize(
-        self, text: str, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
+        self,
+        text: str,
+        *,
+        conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> ChunkedStream:
         return ChunkedStream(tts=self, input_text=text, conn_options=conn_options)
 
@@ -327,7 +333,9 @@ class TTS(tts.TTS):
 
 
 class ChunkedStream(tts.ChunkedStream):
-    def __init__(self, *, tts: TTS, input_text: str, conn_options: APIConnectOptions) -> None:
+    def __init__(
+        self, *, tts: TTS, input_text: str, conn_options: APIConnectOptions
+    ) -> None:
         super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
         self._tts: TTS = tts
         self._opts = replace(tts.options)
@@ -362,7 +370,9 @@ class ChunkedStream(tts.ChunkedStream):
             pcm = body
             sample_rate = opts.sample_rate
             if opts.rest_codec == "pcm" and len(pcm) % 2:
-                raise APIError("PCM body length is not a multiple of 2", retryable=False)
+                raise APIError(
+                    "PCM body length is not a multiple of 2", retryable=False
+                )
 
         output_emitter.initialize(
             request_id=utils.shortuuid(),
@@ -464,7 +474,9 @@ async def _stream_utterance(
         sock_read=conn_options.timeout,
     )
     try:
-        async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
+        async with session.post(
+            url, json=payload, headers=headers, timeout=timeout
+        ) as resp:
             await _raise_for_status(resp)
             ct = resp.content_type or ""
             if ct and "text/event-stream" not in ct:
