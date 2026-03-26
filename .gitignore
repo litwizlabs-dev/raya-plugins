@@ -208,3 +208,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Bakbak smoke test generated audio (keep folder via .gitkeep)
+python/livekit-plugins-bakbak/scripts/output/*
+!python/livekit-plugins-bakbak/scripts/output/.gitkeep

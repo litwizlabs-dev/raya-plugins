@@ -17,15 +17,17 @@ cd python/livekit-plugins-bakbak
 pip install -e .
 ```
 
+Add **`[dev]`** if you plan to run `pytest` (`uv pip install -e ".[dev]"` or `pip install -e ".[dev]"`).
+
 ## Pre-requisites
 
 You'll need an API key from Raya (Bakbak TTS). It can be set as an environment variable: `BAKBAK_API_KEY`. If that is unset, `RAYA_API_KEY` is used.
 
 The default API host is `https://hub.getraya.app`. To use another deployment, set `BAKBAK_BASE_URL` or `RAYA_API_BASE_URL`, or pass `base_url` to `livekit.plugins.bakbak.TTS`.
 
-## Local testing
+## Local setup (API key)
 
-Copy [`.env.example`](.env.example) to `.env` in this directory, set `BAKBAK_API_KEY`, then load env vars in your shell (`.env` is gitignored):
+Copy [`.env.example`](.env.example) to `.env`, set `BAKBAK_API_KEY`, then load vars in your shell (`.env` is gitignored):
 
 ```bash
 cd python/livekit-plugins-bakbak
@@ -34,45 +36,54 @@ cp .env.example .env
 set -a && source .env && set +a   # bash/zsh
 ```
 
+Optional in `.env`: `BAKBAK_VOICE_ID`, `BAKBAK_LANGUAGE`, `BAKBAK_BASE_URL`.
+
 ## Run and test
 
-**1. Environment and install**
+### 1. Install in a venv
 
 ```bash
 cd python/livekit-plugins-bakbak
-uv venv .venv -p 3.12    # or python3 -m venv .venv
+uv venv .venv -p 3.12    # or: python3 -m venv .venv
 source .venv/bin/activate
+uv pip install -e .      # runtime only
+# or, to run pytest too:
 uv pip install -e ".[dev]"
-cp .env.example .env
-# edit .env — set BAKBAK_API_KEY
-set -a && source .env && set +a
 ```
 
-**2. Unit tests** (no API key; checks audio helper logic)
+### 2. Unit tests (no API key)
 
 ```bash
 pytest -q
 ```
 
-**3. Live API smoke test** (needs `BAKBAK_API_KEY`, network)
+### 3. Live API smoke test
 
-Uses [`scripts/smoke_tts.py`](scripts/smoke_tts.py): one `synthesize()` call and one `stream()` call.
-
-Doc examples may use placeholder IDs like `voice_001`; your hub returns real IDs from **`GET /v1/voices`**. List them:
+[`scripts/smoke_tts.py`](scripts/smoke_tts.py) calls `synthesize()` and `stream()` once each. Doc examples may use placeholder IDs like `voice_001`; your hub returns real IDs from **`GET /v1/voices`**.
 
 ```bash
-python scripts/smoke_tts.py --list-voices
+python scripts/smoke_tts.py --list-voices          # discover voice_id values
+python scripts/smoke_tts.py                       # uses first voice from that list
+python scripts/smoke_tts.py --voice YOUR_ID --language hi
 ```
 
-Run the smoke test (if you omit `--voice`, the script picks the **first** voice from that list):
+| Flag | Purpose |
+|------|---------|
+| `--list-voices` | Print `GET /v1/voices` JSON and exit |
+| `--clean` | Delete generated WAVs under the output folder (no API key needed) |
+| `--no-save` | Run checks only; do not write WAV files |
+| `--output-dir DIR` | Where to save WAVs (default: `scripts/output/`); same path used by `--clean` |
+| `--voice` / `--language` | Override (or set `BAKBAK_VOICE_ID` / `BAKBAK_LANGUAGE`) |
+
+**Output audio:** each run writes timestamped files under [`scripts/output/`](scripts/output/) (contents gitignored; [`.gitkeep`](scripts/output/.gitkeep) keeps the folder in git):
+
+- `bakbak-synthesize-*.wav` — non-streaming result  
+- `bakbak-stream-*.wav` — streaming result  
 
 ```bash
-python scripts/smoke_tts.py
-python scripts/smoke_tts.py --voice YOUR_VOICE_ID --language hi
+python scripts/smoke_tts.py --clean
 ```
 
-Override with env: `BAKBAK_VOICE_ID`, `BAKBAK_LANGUAGE`.
+### 4. Use inside a LiveKit agent
 
-**4. Use inside a LiveKit agent**
-
-Install the package in the same environment as `livekit-agents`, set `BAKBAK_API_KEY`, then pass `bakbak.TTS(voice_id=..., language=...)` into your agent session / pipeline as your TTS implementation. Run the worker the same way you do for other LiveKit agent projects (see [LiveKit Agents docs](https://docs.livekit.io/agents/)).
+Install the package in the same environment as `livekit-agents`, set `BAKBAK_API_KEY`, then pass `bakbak.TTS(voice_id=..., language=...)` into your agent session / pipeline. Run your worker as for any LiveKit agent project ([LiveKit Agents docs](https://docs.livekit.io/agents/)).
