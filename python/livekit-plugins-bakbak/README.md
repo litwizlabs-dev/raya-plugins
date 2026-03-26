@@ -4,18 +4,19 @@
 
 ## Installation
 
+In an existing **uv** project (with a `pyproject.toml`):
+
 ```bash
-pip install livekit-plugins-bakbak
+uv add livekit-plugins-bakbak
 ```
 
-From this monorepo checkout:
+From this monorepo checkout (install this package + dev deps into `.venv`):
 
 ```bash
 cd python/livekit-plugins-bakbak
-pip install -e .
+uv venv
+uv sync --extra dev
 ```
-
-Add **`[dev]`** to run tests: `pip install -e ".[dev]"` or `uv pip install -e ".[dev]"`.
 
 ## Using with LiveKit
 
@@ -45,22 +46,40 @@ Work from **`python/livekit-plugins-bakbak`**.
 
 ```bash
 cd python/livekit-plugins-bakbak
-uv venv .venv -p 3.12 && source .venv/bin/activate   # or your venv
-uv pip install -e ".[dev]"
+uv venv
+uv sync --extra dev
 ```
+
+### Running tests (no API key)
+
+Unit tests use mocks and do **not** call the hub:
+
+```bash
+cd python/livekit-plugins-bakbak
+uv run --extra dev pytest tests/ -v
+```
+
+Other useful invocations:
+
+```bash
+uv run --extra dev pytest tests/ -q
+uv run --extra dev pytest tests/test_tts_features.py -v
+```
+
+### Smoke script (real API)
+
+[`scripts/smoke_tts.py`](scripts/smoke_tts.py) hits the real API and writes WAVs under [`scripts/output/`](scripts/output/). Set a key first:
 
 ```bash
 cp .env.example .env   # set BAKBAK_API_KEY
 set -a && source .env && set +a
-pytest -q
 ```
 
-[`scripts/smoke_tts.py`](scripts/smoke_tts.py) hits the real API and writes WAVs under [`scripts/output/`](scripts/output/).
-
 ```bash
-python scripts/smoke_tts.py --list-voices
-python scripts/smoke_tts.py --voice YOUR_VOICE_ID --language hi -t "Your text."
-python scripts/smoke_tts.py --clean
+cd python/livekit-plugins-bakbak
+uv run --extra dev python scripts/smoke_tts.py --list-voices
+uv run --extra dev python scripts/smoke_tts.py --voice YOUR_VOICE_ID --language hi -t "Your text."
+uv run --extra dev python scripts/smoke_tts.py --clean
 ```
 
 | Flag | Purpose |
@@ -72,4 +91,4 @@ python scripts/smoke_tts.py --clean
 | `--text` / `-t` | Text to synthesize |
 | `--voice` / `--language` | Overrides (or use `BAKBAK_VOICE_ID` / `BAKBAK_LANGUAGE` in `.env`) |
 
-Use **`python scripts/smoke_tts.py --help`** for all options (including debugging helpers).
+Use **`uv run --extra dev python scripts/smoke_tts.py --help`** for all options (including debugging helpers).
