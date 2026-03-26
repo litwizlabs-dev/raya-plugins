@@ -13,7 +13,10 @@ Voice IDs are **not** the doc placeholder ``voice_001`` — they come from your 
 List them with ``--list-voices``, or omit ``--voice`` to use the **first** voice returned
 by ``GET /v1/voices``.
 
-Optional env: ``BAKBAK_VOICE_ID``, ``BAKBAK_LANGUAGE``, ``BAKBAK_BASE_URL`` / ``RAYA_API_BASE_URL``.
+Optional env: ``BAKBAK_VOICE_ID``, ``BAKBAK_LANGUAGE``, ``BAKBAK_SMOKE_TEXT``,
+``BAKBAK_BASE_URL`` / ``RAYA_API_BASE_URL``.
+
+Override spoken text: ``python scripts/smoke_tts.py -t "Your sentence here"``.
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ from pathlib import Path
 import aiohttp
 
 from livekit import rtc
+
+_DEFAULT_SMOKE_TEXT = "Hello from the Bakbak smoke test."
 
 
 def _script_dir() -> Path:
@@ -125,6 +130,16 @@ async def main() -> int:
         metavar="CODE",
         help="language code (default: env BAKBAK_LANGUAGE, else language of chosen voice, else hi)",
     )
+    parser.add_argument(
+        "--text",
+        "-t",
+        default=None,
+        metavar="STRING",
+        help=(
+            "Text to synthesize for both non-streaming and streaming checks "
+            f"(default: env BAKBAK_SMOKE_TEXT or {_DEFAULT_SMOKE_TEXT!r})"
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = (
@@ -193,9 +208,15 @@ async def main() -> int:
 
     from livekit.plugins.bakbak import TTS
 
+    text = (args.text or os.environ.get("BAKBAK_SMOKE_TEXT") or _DEFAULT_SMOKE_TEXT).strip()
+    if not text:
+        print("Text is empty (use --text / -t or BAKBAK_SMOKE_TEXT).", file=sys.stderr)
+        return 1
+
     engine = TTS(voice_id=voice_id, language=language)
-    text = "Hello from the Bakbak smoke test."
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    preview = text if len(text) <= 72 else f"{text[:69]}…"
+    print(f"Text ({len(text)} chars): {preview!r}")
 
     try:
         print("Non-streaming (synthesize)…")
