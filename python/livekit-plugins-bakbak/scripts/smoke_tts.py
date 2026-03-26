@@ -9,6 +9,12 @@ Usage (from ``python/livekit-plugins-bakbak``):
 WAV files are written under ``scripts/output/`` by default so you can play them locally.
 Remove them with ``python scripts/smoke_tts.py --clean``.
 
+Dump raw SSE lines (structure / event names) without going through the LiveKit engine::
+
+    python scripts/smoke_tts.py --dump-stream-raw
+
+Long ``data:`` lines are truncated in the printout so the terminal stays readable.
+
 Voice IDs are **not** the doc placeholder ``voice_001`` — they come from your hub.
 List them with ``--list-voices``, or omit ``--voice`` to use the **first** voice returned
 by ``GET /v1/voices``.
@@ -78,6 +84,86 @@ def _resolve_base_url() -> str:
     return "https://hub.getraya.app".rstrip("/")
 
 
+def _format_sse_dump_line(line: str, max_len: int = 160) -> str:
+    """Shorten long ``data:`` JSON lines (base64 audio) for console output."""
+    if not line.startswith("data:"):
+        return line if len(line) <= max_len else line[: max_len - 3] + "..."
+    rest = line[5:].lstrip()
+    if len(rest) <= max_len:
+        return line
+    try:
+        obj = json.loads(rest)
+    except json.JSONDecodeError:
+        return f"data: {rest[: max_len - 8]}... ({len(rest)} chars)"
+    if isinstance(obj, dict) and isinstance(obj.get("data"), str):
+        raw_b64 = obj["data"]
+        preview = raw_b64[:48] + "…" if len(raw_b64) > 48 else raw_b64
+        slim = {k: v for k, v in obj.items() if k != "data"}
+        slim["data"] = f"<base64 {len(raw_b64)} chars: {preview}>"
+        return "data: " + json.dumps(slim, separators=(",", ":"))
+    return line if len(line) <= max_len else line[: max_len - 3] + "..."
+
+
+async def dump_stream_raw(
+    session: aiohttp.ClientSession,
+    *,
+    base_url: str,
+    api_key: str,
+    voice_id: str,
+    language: str,
+    text: str,
+    max_lines: int,
+) -> int:
+    """POST ``/v1/text-to-speech/stream`` and print SSE lines (truncated ``data:``)."""
+    url = f"{base_url}/v1/text-to-speech/stream"
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    payload = {
+        "text": text,
+        "voice_id": voice_id,
+        "language": language,
+        "model": "standard",
+        "sample_rate": 24000,
+        "speed": 1.0,
+        "codec": "wav",
+    }
+    print(f"POST {url}")
+    event_types: list[str] = []
+    json_keys_seen: set[str] = set()
+    n = 0
+    try:
+        async with session.post(url, headers=headers, json=payload) as resp:
+            print(f"HTTP {resp.status} content-type={resp.content_type!r}")
+            if resp.status >= 400:
+                print((await resp.text())[:2000], file=sys.stderr)
+                return 1
+            while n < max_lines:
+                line_b = await resp.content.readline()
+                if not line_b:
+                    break
+                line = line_b.decode("utf-8", errors="replace").rstrip("\r\n")
+                print(_format_sse_dump_line(line))
+                n += 1
+                if line.startswith("event:"):
+                    event_types.append(line[6:].strip())
+                if line.startswith("data:"):
+                    rest = line[5:].lstrip()
+                    try:
+                        d = json.loads(rest)
+                        if isinstance(d, dict):
+                            json_keys_seen.update(d.keys())
+                    except json.JSONDecodeError:
+                        pass
+    except Exception as e:
+        print(e, file=sys.stderr)
+        return 1
+
+    print("--- summary ---")
+    print(f"lines_printed={n}")
+    print(f"event_fields={event_types}")
+    print(f"json_keys_union={sorted(json_keys_seen)}")
+    return 0
+
+
 async def _fetch_voices(
     session: aiohttp.ClientSession, base_url: str, api_key: str
 ) -> list[dict]:
@@ -96,6 +182,18 @@ async def _fetch_voices(
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description="Bakbak TTS smoke test")
+    parser.add_argument(
+        "--dump-stream-raw",
+        action="store_true",
+        help="POST /v1/text-to-speech/stream and print SSE lines (truncated data), then exit",
+    )
+    parser.add_argument(
+        "--dump-max-lines",
+        type=int,
+        default=120,
+        metavar="N",
+        help="With --dump-stream-raw, max SSE lines to print (default: 120)",
+    )
     parser.add_argument(
         "--list-voices",
         action="store_true",
@@ -202,6 +300,26 @@ async def main() -> int:
             )
         elif not language:
             language = "hi"
+
+        if args.dump_stream_raw:
+            text = (
+                args.text or os.environ.get("BAKBAK_SMOKE_TEXT") or _DEFAULT_SMOKE_TEXT
+            ).strip()
+            if not text:
+                print(
+                    "Text is empty (use --text / -t or BAKBAK_SMOKE_TEXT).",
+                    file=sys.stderr,
+                )
+                return 1
+            return await dump_stream_raw(
+                http,
+                base_url=base_url,
+                api_key=api_key,
+                voice_id=voice_id,
+                language=language,
+                text=text,
+                max_lines=args.dump_max_lines,
+            )
 
     if not args.no_save:
         output_dir.mkdir(parents=True, exist_ok=True)

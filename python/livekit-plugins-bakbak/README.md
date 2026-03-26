@@ -1,8 +1,6 @@
 # Bakbak plugin for LiveKit Agents
 
-Support for text-to-speech with [Bakbak](https://docs.litwizlabs.com/documentation/tts-overview) (Raya). The API offers non-streaming and SSE streaming endpoints; this plugin maps them to `TTS.synthesize()` and `TTS.stream()` respectively — see [Getting Started with Bakbak TTS](https://docs.litwizlabs.com/documentation/tts-getting-started).
-
-See the [Bakbak TTS documentation](https://docs.litwizlabs.com/documentation/tts-overview) and [API reference](https://docs.litwizlabs.com/api-reference/text-to-speech/text-to-speech.md) for more information.
+**[LiveKit Agents](https://docs.livekit.io/agents/)** TTS for [Bakbak / Raya](https://docs.litwizlabs.com/documentation/tts-overview). Use **`TTS.synthesize(text)`** for full utterances or **`TTS.stream()`** for lower-latency streaming in realtime agents.
 
 ## Installation
 
@@ -17,78 +15,61 @@ cd python/livekit-plugins-bakbak
 pip install -e .
 ```
 
-Add **`[dev]`** if you plan to run `pytest` (`pip install -e ".[dev]"` or `uv pip install -e ".[dev]"`).
+Add **`[dev]`** to run tests: `pip install -e ".[dev]"` or `uv pip install -e ".[dev]"`.
 
-## Pre-requisites
+## Using with LiveKit
 
-You'll need an API key from Raya (Bakbak TTS). It can be set as an environment variable: `BAKBAK_API_KEY`. If that is unset, `RAYA_API_KEY` is used.
+1. Install next to **`livekit-agents`** in the same environment as your worker.
+2. Set **`BAKBAK_API_KEY`** (or **`RAYA_API_KEY`**). Optional: **`BAKBAK_BASE_URL`** / **`RAYA_API_BASE_URL`** if not using the default hub, or pass **`base_url`** into **`TTS`**.
+3. Build a **`bakbak.TTS`** instance and pass it into your agent session / voice pipeline like any other LiveKit TTS plugin.
 
-The default API host is `https://hub.getraya.app`. To use another deployment, set `BAKBAK_BASE_URL` or `RAYA_API_BASE_URL`, or pass `base_url` to `livekit.plugins.bakbak.TTS`.
+```python
+from livekit.plugins import bakbak
+
+tts = bakbak.TTS(voice_id="YOUR_VOICE_ID", language="hi")
+# Wire `tts` into AgentSession / your pipeline — see LiveKit Agents docs.
+```
+
+Discover **`voice_id`** values with:
+
+```python
+voices = await tts.list_voices()              # cached 1h per instance
+voices = await tts.list_voices(force_refresh=True)
+```
+
+Account setup, languages, and hub details: [Bakbak TTS docs](https://docs.litwizlabs.com/documentation/tts-getting-started).
 
 ## Run and test (this package)
 
-Work from **`python/livekit-plugins-bakbak`** so the virtualenv and paths match this project.
-
-### 1. Virtualenv and install
+Work from **`python/livekit-plugins-bakbak`**.
 
 ```bash
 cd python/livekit-plugins-bakbak
-uv venv .venv -p 3.12          # or: python3 -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
-uv pip install -e ".[dev]"     # or: pip install -e ".[dev]"
+uv venv .venv -p 3.12 && source .venv/bin/activate   # or your venv
+uv pip install -e ".[dev]"
 ```
 
-Use **this folder’s** `.venv` when you run `uv pip install` here. If a different environment is already active and `uv` warns about `VIRTUAL_ENV`, either activate `.venv` as above or append **`--active`** to install into the current env.
-
-### 2. API key
-
 ```bash
-cp .env.example .env
-# edit .env — set BAKBAK_API_KEY
-set -a && source .env && set +a   # bash/zsh
-```
-
-Optional in `.env`: `BAKBAK_VOICE_ID`, `BAKBAK_LANGUAGE`, `BAKBAK_SMOKE_TEXT`, `BAKBAK_BASE_URL`.
-
-### 3. Unit tests (no API key)
-
-```bash
+cp .env.example .env   # set BAKBAK_API_KEY
+set -a && source .env && set +a
 pytest -q
 ```
 
-### 4. Smoke script (real API + WAV output)
-
-[`scripts/smoke_tts.py`](scripts/smoke_tts.py) exercises **`synthesize()`** and **`stream()`** once each and saves **WAV** files under [`scripts/output/`](scripts/output/).
-
-Doc examples may use placeholder IDs like `voice_001`; your hub returns real IDs from **`GET /v1/voices`**.
-
-**Typical flow:**
+[`scripts/smoke_tts.py`](scripts/smoke_tts.py) hits the real API and writes WAVs under [`scripts/output/`](scripts/output/).
 
 ```bash
-# still in python/livekit-plugins-bakbak, venv active, .env sourced
 python scripts/smoke_tts.py --list-voices
-python scripts/smoke_tts.py
-python scripts/smoke_tts.py --voice YOUR_VOICE_ID --language hi -t "Your text here."
+python scripts/smoke_tts.py --voice YOUR_VOICE_ID --language hi -t "Your text."
+python scripts/smoke_tts.py --clean
 ```
 
 | Flag | Purpose |
 |------|---------|
-| `--list-voices` | Print `GET /v1/voices` JSON and exit |
-| `--clean` | Delete generated WAVs under the output folder (no API key needed) |
-| `--no-save` | Run checks only; do not write WAV files |
-| `--output-dir DIR` | Where to save WAVs (default: `scripts/output/`); same path used by `--clean` |
-| `--text` / `-t` | Sentence to synthesize (or env `BAKBAK_SMOKE_TEXT`; default short English phrase) |
-| `--voice` / `--language` | Override (or set `BAKBAK_VOICE_ID` / `BAKBAK_LANGUAGE`) |
+| `--list-voices` | List voices (JSON) and exit |
+| `--clean` | Remove generated WAVs under the output folder |
+| `--no-save` | Run checks only; no WAV files |
+| `--output-dir DIR` | Output directory (default: `scripts/output/`) |
+| `--text` / `-t` | Text to synthesize |
+| `--voice` / `--language` | Overrides (or use `BAKBAK_VOICE_ID` / `BAKBAK_LANGUAGE` in `.env`) |
 
-**Output files** (timestamped per run):
-
-- `bakbak-synthesize-*.wav` — non-streaming  
-- `bakbak-stream-*.wav` — streaming  
-
-```bash
-python scripts/smoke_tts.py --clean
-```
-
-### 5. Use inside a LiveKit agent
-
-Install the package in the same environment as `livekit-agents`, set `BAKBAK_API_KEY`, then pass `bakbak.TTS(voice_id=..., language=...)` into your agent session / pipeline. Run your worker as for any LiveKit agent project ([LiveKit Agents docs](https://docs.livekit.io/agents/)).
+Use **`python scripts/smoke_tts.py --help`** for all options (including debugging helpers).
