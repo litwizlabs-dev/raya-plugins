@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .stt import STT, BakbakSTTLanguage
 from .tts import (
     TTS,
     BakbakCodec,
@@ -8,6 +9,8 @@ from .tts import (
 )
 
 __all__ = [
+    "STT",
+    "BakbakSTTLanguage",
     "TTS",
     "BakbakCodec",
     "BakbakLanguage",

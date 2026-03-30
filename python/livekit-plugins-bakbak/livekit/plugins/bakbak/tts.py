@@ -5,7 +5,6 @@ import asyncio
 import base64
 import io
 import json
-import os
 import time
 import wave
 import weakref
@@ -35,27 +34,31 @@ from livekit.agents.utils import is_given
 from livekit.agents.metrics import TTSMetrics
 
 from .log import logger
+from ._client import (
+    API_KEY_HEADER,
+    post_with_retry as _post_with_retry,
+    raise_for_status as _raise_for_status,
+    resolve_api_key as _resolve_api_key,
+)
+from ._urls import (
+    DEFAULT_HUB_URL,
+    resolve_hub_base_url,
+    tts_stream_url,
+    tts_synthesize_url,
+    tts_voices_url,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-API_KEY_HEADER = "X-API-Key"
-DEFAULT_BASE_URL = "https://hub.getraya.app"
-
-_PATH_SYNTHESIZE = "/v1/text-to-speech"
-_PATH_STREAM = "/v1/text-to-speech/stream"
-_PATH_VOICES = "/v1/voices"
+DEFAULT_BASE_URL = DEFAULT_HUB_URL
 
 _CHUNKED_TIMEOUT = aiohttp.ClientTimeout(total=120, sock_connect=10)
 _STREAM_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=10)
 
 # ~32 KB ≈ ~340 ms at 24 kHz mono s16le
 _PCM_CHUNK_BYTES = 32_000
-
-# Retry / backoff
-_MAX_RETRIES = 3
-_RETRY_BASE_DELAY = 1.0  # seconds; doubled each attempt
 
 # Voices cache TTL
 _VOICES_CACHE_TTL = 3600  # 1 hour
@@ -77,30 +80,6 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Small helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _resolve_base_url(explicit: Optional[str]) -> str:
-    candidates = [
-        explicit,
-        os.environ.get("BAKBAK_BASE_URL"),
-        os.environ.get("RAYA_API_BASE_URL"),
-    ]
-    value = next((v.strip() for v in candidates if v and v.strip()), None)
-    return value.strip("/ \t\n") if value else DEFAULT_BASE_URL.rstrip("/")
-
-
-def _resolve_api_key(explicit: Optional[str]) -> str:
-    candidates = [
-        explicit,
-        os.environ.get("BAKBAK_API_KEY"),
-        os.environ.get("RAYA_API_KEY"),
-    ]
-    value = next((v.strip() for v in candidates if v and v.strip()), None)
-    if not value:
-        raise ValueError(
-            "Bakbak API key required: pass api_key= or set BAKBAK_API_KEY / RAYA_API_KEY."
-        )
-    return value
 
 
 def _f32le_to_s16le(data: bytes) -> bytes:
@@ -145,76 +124,6 @@ def _pcm_from_wav(body: bytes, configured_rate: int) -> tuple[memoryview, int]:
         raise APIError(f"invalid WAV from Bakbak: {exc}", retryable=False) from exc
 
 
-async def _raise_for_status(resp: aiohttp.ClientResponse) -> None:
-    """Read the error body and raise a typed APIStatusError."""
-    if resp.status < 400:
-        return
-    text = await resp.text()
-    detail: object = text
-    try:
-        parsed = json.loads(text)
-        if isinstance(parsed, dict) and "detail" in parsed:
-            detail = parsed
-            text = str(parsed["detail"])
-    except json.JSONDecodeError:
-        pass
-    if resp.status == 429:
-        raise APIStatusError(
-            message="Bakbak rate limit exceeded — back off and retry",
-            status_code=429,
-            body=detail,
-        )
-    raise APIStatusError(
-        message=text or resp.reason, status_code=resp.status, body=detail
-    )
-
-
-async def _post_with_retry(
-    session: aiohttp.ClientSession,
-    url: str,
-    *,
-    headers: dict[str, str],
-    payload: dict[str, Any],
-    timeout: aiohttp.ClientTimeout,
-) -> aiohttp.ClientResponse:
-    """POST with exponential backoff on 429 and transient 5xx errors."""
-    last_exc: Exception | None = None
-    for attempt in range(_MAX_RETRIES):
-        try:
-            resp = await session.post(
-                url, json=payload, headers=headers, timeout=timeout
-            )
-            if resp.status in (429, 500, 502, 503, 504) and attempt < _MAX_RETRIES - 1:
-                await resp.release()
-                delay = _RETRY_BASE_DELAY * (2**attempt)
-                logger.warning(
-                    "Bakbak request got %d; retrying in %.1fs (attempt %d/%d)",
-                    resp.status,
-                    delay,
-                    attempt + 1,
-                    _MAX_RETRIES,
-                )
-                await asyncio.sleep(delay)
-                continue
-            return resp
-        except asyncio.TimeoutError:
-            raise APITimeoutError() from None
-        except aiohttp.ClientError as exc:
-            last_exc = exc
-            if attempt < _MAX_RETRIES - 1:
-                delay = _RETRY_BASE_DELAY * (2**attempt)
-                logger.warning(
-                    "Bakbak connection error: %s; retrying in %.1fs (attempt %d/%d)",
-                    exc,
-                    delay,
-                    attempt + 1,
-                    _MAX_RETRIES,
-                )
-                await asyncio.sleep(delay)
-            continue
-    raise APIConnectionError() from last_exc
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Options
 # ─────────────────────────────────────────────────────────────────────────────
@@ -234,9 +143,6 @@ class _TTSOptions:
     @property
     def auth_headers(self) -> dict[str, str]:
         return {API_KEY_HEADER: self.api_key, "Content-Type": "application/json"}
-
-    def url(self, path: str) -> str:
-        return f"{self.base_url}/{path.lstrip('/')}"
 
     def request_json(
         self, text: str, *, codec: Optional[BakbakCodec] = None
@@ -303,7 +209,9 @@ class TTS(tts.TTS):
             raise ValueError(f"speed must be between 0.5 and 1.5, got {speed}")
         self._opts = _TTSOptions(
             api_key=_resolve_api_key(api_key),
-            base_url=_resolve_base_url(base_url),
+            base_url=resolve_hub_base_url(
+                base_url, "BAKBAK_BASE_URL", "RAYA_API_BASE_URL"
+            ),
             voice_id=voice_id,
             language=str(language),
             model=model,
@@ -429,7 +337,7 @@ class TTS(tts.TTS):
             opts = self._opts
             try:
                 async with self.ensure_session().get(
-                    opts.url(_PATH_VOICES),
+                    tts_voices_url(opts.base_url),
                     headers=opts.auth_headers,
                     timeout=aiohttp.ClientTimeout(total=30, sock_connect=10),
                 ) as resp:
@@ -482,10 +390,11 @@ class ChunkedStream(tts.ChunkedStream):
         try:
             async with await _post_with_retry(
                 self._tts.ensure_session(),
-                opts.url(_PATH_SYNTHESIZE),
+                tts_synthesize_url(opts.base_url),
                 headers=opts.auth_headers,
-                payload=opts.request_json(self._input_text),
                 timeout=timeout,
+                log_prefix="Bakbak TTS",
+                json=opts.request_json(self._input_text),
             ) as resp:
                 await _raise_for_status(resp)
                 body = await resp.read()
@@ -595,7 +504,7 @@ class SynthesizeStream(tts.SynthesizeStream):
     ) -> None:
         opts = self._opts
         session = self._tts.ensure_session()
-        url = opts.url(_PATH_STREAM)
+        url = tts_stream_url(opts.base_url)
         total_chars = 0
 
         async for ev in sent_stream:
@@ -612,7 +521,6 @@ class SynthesizeStream(tts.SynthesizeStream):
                 payload=opts.request_json(text, codec="wav"),
                 output_emitter=output_emitter,
                 timeout=timeout,
-                request_id=request_id,
             )
             duration = time.perf_counter() - start_time
             total_chars += len(text)
@@ -645,7 +553,6 @@ async def _stream_utterance(
     payload: dict[str, Any],
     output_emitter: tts.AudioEmitter,
     timeout: aiohttp.ClientTimeout,
-    request_id: str,
 ) -> float:
     """POST a single utterance to the streaming endpoint and consume SSE.
 
@@ -653,7 +560,12 @@ async def _stream_utterance(
     """
     try:
         async with await _post_with_retry(
-            session, url, headers=headers, payload=payload, timeout=timeout
+            session,
+            url,
+            headers=headers,
+            timeout=timeout,
+            log_prefix="Bakbak TTS stream",
+            json=payload,
         ) as resp:
             await _raise_for_status(resp)
             ct = resp.content_type or ""

@@ -1,6 +1,6 @@
 # Bakbak plugin for LiveKit Agents
 
-**[LiveKit Agents](https://docs.livekit.io/agents/)** TTS for [Bakbak / Raya](https://docs.litwizlabs.com/documentation/tts-overview). Use **`TTS.synthesize(text)`** for full utterances or **`TTS.stream()`** for lower-latency streaming in realtime agents.
+**[LiveKit Agents](https://docs.livekit.io/agents/)** TTS and STT for [Bakbak / Raya](https://docs.litwizlabs.com/documentation/tts-overview). Use **`TTS.synthesize(text)`** for full utterances or **`TTS.stream()`** for lower-latency synthesis; use **`STT.recognize()`** for batch transcription or **`STT.stream()`** for realtime segments over WebSocket (see [Speech to Text](https://docs.litwizlabs.com/api-reference/speech-to-text/speech-to-text)).
 
 ## Installation
 
@@ -40,6 +40,22 @@ voices = await tts.list_voices(force_refresh=True)
 
 Account setup, languages, and hub details: [Bakbak TTS docs](https://docs.litwizlabs.com/documentation/tts-getting-started).
 
+### Speech-to-text (STT)
+
+Use the same API key and optional base URL as TTS. Pass **`bakbak.STT`** into **`AgentSession`** (or your pipeline) like any other LiveKit STT plugin.
+
+```python
+from livekit.plugins import bakbak
+
+stt = bakbak.STT(language="hi")  # optional; hub also accepts omission
+# AgentSession(..., stt=stt, ...)
+```
+
+- **`recognize()`** — HTTP `POST /transcribe` with a WAV built from an **`AudioBuffer`**.
+- **`stream()`** — WebSocket to `wss://<hub>/transcribe`; each **`flush()`** sends one base64 WAV payload and yields a final transcript for that segment. Default input sample rate is **16 kHz** mono (`sample_rate` on **`STT`**); the stream resamples incoming frames to match.
+
+API reference: [Speech to Text (HTTP)](https://docs.litwizlabs.com/api-reference/speech-to-text/speech-to-text) and the WSS section in the same docs tree.
+
 ## Run and test (this package)
 
 Work from **`python/livekit-plugins-bakbak`**.
@@ -64,6 +80,7 @@ Other useful invocations:
 ```bash
 uv run --extra dev pytest tests/ -q
 uv run --extra dev pytest tests/test_tts_features.py -v
+uv run --extra dev pytest tests/test_stt.py -v
 ```
 
 ### Smoke script (real API)

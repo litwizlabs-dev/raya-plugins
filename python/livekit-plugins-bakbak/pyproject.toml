@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "livekit-plugins-bakbak"
 dynamic = ["version"]
-description = "Agent Framework plugin for Bakbak (Raya) text-to-speech."
+description = "Agent Framework plugin for Bakbak (Raya) text-to-speech and speech-to-text."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10.0"
@@ -19,6 +19,7 @@ keywords = [
     "livekit",
     "bakbak",
     "tts",
+    "stt",
     "raya",
 ]
 classifiers = [
