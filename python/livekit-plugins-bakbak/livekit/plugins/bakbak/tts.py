@@ -1,3 +1,5 @@
+"""Bakbak / Raya text-to-speech plugin for LiveKit Agents."""
+
 from __future__ import annotations
 
 import array
@@ -36,6 +38,7 @@ from livekit.agents.metrics import TTSMetrics
 from .log import logger
 from ._client import (
     API_KEY_HEADER,
+    BAKBAK_METRICS_PROVIDER,
     post_with_retry as _post_with_retry,
     raise_for_status as _raise_for_status,
     resolve_api_key as _resolve_api_key,
@@ -83,7 +86,19 @@ except ImportError:
 
 
 def _f32le_to_s16le(data: bytes) -> bytes:
-    """Convert raw F32LE PCM bytes to S16LE. Uses numpy when available."""
+    """Convert raw 32-bit float LE PCM to signed 16-bit LE PCM.
+
+    Uses NumPy when available; otherwise falls back to :mod:`array`.
+
+    Args:
+        data: Raw F32LE samples (length must be a multiple of 4).
+
+    Returns:
+        S16LE PCM bytes suitable for :class:`~livekit.rtc.AudioFrame`.
+
+    Raises:
+        APIError: If ``len(data)`` is not divisible by 4.
+    """
     if len(data) % 4:
         raise APIError(
             f"F32LE PCM length {len(data)} is not a multiple of 4", retryable=False
@@ -99,7 +114,18 @@ def _f32le_to_s16le(data: bytes) -> bytes:
 
 
 def _pcm_from_wav(body: bytes, configured_rate: int) -> tuple[memoryview, int]:
-    """Parse a WAV body and return (pcm_memory_view, sample_rate)."""
+    """Parse a mono 16-bit WAV payload from the hub.
+
+    Args:
+        body: Raw WAV file bytes.
+        configured_rate: Expected sample rate (logged if the file differs).
+
+    Returns:
+        Tuple of PCM memory view and effective sample rate in Hz.
+
+    Raises:
+        APIError: If the WAV is not mono 16-bit or is malformed.
+    """
     try:
         with wave.open(io.BytesIO(body), "rb") as wf:
             ch, sr, sw = wf.getnchannels(), wf.getframerate(), wf.getsampwidth()
@@ -131,6 +157,8 @@ def _pcm_from_wav(body: bytes, configured_rate: int) -> tuple[memoryview, int]:
 
 @dataclass
 class _TTSOptions:
+    """Runtime configuration for :class:`TTS` requests (internal)."""
+
     api_key: str
     base_url: str
     voice_id: str
@@ -142,11 +170,21 @@ class _TTSOptions:
 
     @property
     def auth_headers(self) -> dict[str, str]:
+        """Headers for JSON hub calls (API key + ``Content-Type``)."""
         return {API_KEY_HEADER: self.api_key, "Content-Type": "application/json"}
 
     def request_json(
         self, text: str, *, codec: Optional[BakbakCodec] = None
     ) -> dict[str, Any]:
+        """Build the JSON body for synthesis ``POST`` requests.
+
+        Args:
+            text: Input text to synthesize.
+            codec: Override ``rest_codec`` for this request (for example ``"wav"`` for streaming).
+
+        Returns:
+            Serializable dict for :meth:`aiohttp.ClientSession.post` ``json=``.
+        """
         return {
             "text": text,
             "voice_id": self.voice_id,
@@ -238,28 +276,33 @@ class TTS(tts.TTS):
 
     @property
     def model(self) -> str:
+        """Configured synthesis model id (for example ``"standard"``)."""
         return self._opts.model
 
     @property
     def provider(self) -> str:
-        return "Bakbak"
+        """Telemetry provider label (``BAKBAK_METRICS_PROVIDER``)."""
+        return BAKBAK_METRICS_PROVIDER
 
     @property
     def options(self) -> _TTSOptions:
+        """Current :class:`_TTSOptions` snapshot (mutable via :meth:`update_options`)."""
         return self._opts
 
     @property
     def sentence_tokenizer(self) -> tokenize.SentenceTokenizer:
+        """Sentence tokenizer used on the streaming synthesis path."""
         return self._sentence_tokenizer
 
     @property
     def stream_pacer(self) -> Optional[SentenceStreamPacer]:
+        """Optional pacer wrapping the sentence stream, or ``None``."""
         return self._stream_pacer
 
     # ── Session management ───────────────────────────────────────────────────
 
     def ensure_session(self) -> aiohttp.ClientSession:
-        """Return a shared ``aiohttp.ClientSession``, creating one if needed."""
+        """Return a shared :class:`aiohttp.ClientSession`, creating one if needed."""
         if self._session is not None:
             return self._session
         try:
@@ -277,11 +320,28 @@ class TTS(tts.TTS):
         *,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> ChunkedStream:
+        """Synthesize ``text`` in one shot via the non-streaming REST endpoint.
+
+        Args:
+            text: Full utterance to synthesize.
+            conn_options: Framework connect options for the underlying request.
+
+        Returns:
+            A :class:`ChunkedStream` that yields PCM when collected.
+        """
         return ChunkedStream(tts=self, input_text=text, conn_options=conn_options)
 
     def stream(
         self, *, conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS
     ) -> SynthesizeStream:
+        """Start low-latency streaming synthesis (SSE) with sentence chunking.
+
+        Args:
+            conn_options: Framework connect options for stream requests.
+
+        Returns:
+            A :class:`SynthesizeStream` bound to this engine.
+        """
         s = SynthesizeStream(tts=self, conn_options=conn_options)
         self._streams.add(s)
         return s
@@ -320,10 +380,18 @@ class TTS(tts.TTS):
         )
 
     async def list_voices(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
-        """Return available voices, using a 1-hour in-memory cache.
+        """Return available voices using a 1-hour in-memory cache.
 
         Args:
             force_refresh: Bypass the cache and fetch from the API.
+
+        Returns:
+            List of voice metadata dicts (hub-specific shape).
+
+        Raises:
+            APIStatusError: On HTTP error responses.
+            APITimeoutError: On request timeout.
+            APIConnectionError: On connection failure.
         """
         async with self._voices_lock:
             now = time.monotonic()
@@ -357,6 +425,7 @@ class TTS(tts.TTS):
             return voices
 
     async def aclose(self) -> None:
+        """Close active synthesis streams and any session owned by this instance."""
         if self._streams:
             await asyncio.gather(
                 *(s.aclose() for s in list(self._streams)), return_exceptions=True
@@ -372,14 +441,18 @@ class TTS(tts.TTS):
 
 
 class ChunkedStream(tts.ChunkedStream):
+    """Non-streaming synthesis: one ``POST`` per :meth:`TTS.synthesize` call."""
+
     def __init__(
         self, *, tts: TTS, input_text: str, conn_options: APIConnectOptions
     ) -> None:
+        """Internal constructor (use :meth:`TTS.synthesize`)."""
         super().__init__(tts=tts, input_text=input_text, conn_options=conn_options)
         self._tts: TTS = tts
         self._opts = replace(tts.options)
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        """Fetch audio from the REST endpoint, decode, push PCM, emit metrics."""
         opts = self._opts
         timeout = aiohttp.ClientTimeout(
             total=_CHUNKED_TIMEOUT.total,
@@ -453,12 +526,16 @@ class ChunkedStream(tts.ChunkedStream):
 
 
 class SynthesizeStream(tts.SynthesizeStream):
+    """Streaming synthesis: tokenized sentences, SSE per sentence, concurrent I/O."""
+
     def __init__(self, *, tts: TTS, conn_options: APIConnectOptions) -> None:
+        """Internal constructor (use :meth:`TTS.stream`)."""
         super().__init__(tts=tts, conn_options=conn_options)
         self._tts: TTS = tts
         self._opts = replace(tts.options)
 
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
+        """Run input forwarding and synthesis tasks concurrently until shutdown."""
         output_emitter.initialize(
             request_id=utils.shortuuid(),
             sample_rate=self._opts.sample_rate,
@@ -489,6 +566,7 @@ class SynthesizeStream(tts.SynthesizeStream):
             await sent_stream.aclose()
 
     async def _input_task(self, sent_stream: tokenize.SentenceStream) -> None:
+        """Forward text from the TTS input channel to the sentence tokenizer."""
         async for data in self._input_ch:
             if isinstance(data, self._FlushSentinel):
                 sent_stream.flush()
@@ -502,6 +580,7 @@ class SynthesizeStream(tts.SynthesizeStream):
         output_emitter: tts.AudioEmitter,
         timeout: aiohttp.ClientTimeout,
     ) -> None:
+        """Consume tokenized sentences and POST each to the streaming endpoint."""
         opts = self._opts
         session = self._tts.ensure_session()
         url = tts_stream_url(opts.base_url)
@@ -554,9 +633,24 @@ async def _stream_utterance(
     output_emitter: tts.AudioEmitter,
     timeout: aiohttp.ClientTimeout,
 ) -> float:
-    """POST a single utterance to the streaming endpoint and consume SSE.
+    """POST one sentence to the streaming endpoint and consume its SSE body.
 
-    Returns the time-to-first-byte (seconds) for metrics.
+    Args:
+        session: Shared HTTP session.
+        url: Streaming TTS URL.
+        headers: Auth + content headers.
+        payload: JSON body for this utterance.
+        output_emitter: LiveKit audio sink for decoded PCM.
+        timeout: Per-request timeouts.
+
+    Returns:
+        Time-to-first-byte in seconds (see :func:`_consume_sse`).
+
+    Raises:
+        APIStatusError: Non-success HTTP status after :func:`_raise_for_status`.
+        APITimeoutError: Request timeout from :func:`_post_with_retry`.
+        APIConnectionError: Connection failure, or :exc:`aiohttp.ClientError` wrapped here.
+        APIError: Invalid SSE payloads while consuming the stream.
     """
     try:
         async with await _post_with_retry(
@@ -583,7 +677,15 @@ async def _consume_sse(
     resp: aiohttp.ClientResponse,
     output_emitter: tts.AudioEmitter,
 ) -> float:
-    """Read an SSE response using ``readline`` and return time-to-first-byte."""
+    """Delegate to :func:`_consume_sse_readline` using ``resp.content.readline``.
+
+    Args:
+        resp: Open streaming response with an SSE body.
+        output_emitter: Destination for decoded PCM chunks.
+
+    Returns:
+        Time-to-first-byte in seconds.
+    """
     return await _consume_sse_readline(resp.content.readline, output_emitter)
 
 
@@ -593,12 +695,19 @@ async def _consume_sse_readline(
 ) -> float:
     """Read an SSE response line-by-line and dispatch decoded PCM chunks.
 
-    Handles two SSE payload styles from Bakbak:
-    - Style A: ``event: chunk`` field + ``data: {...}`` (event field as discriminator)
-    - Style B: no ``event:`` field, ``data: {"type": "chunk", ...}`` (type key as discriminator)
+    Handles two Bakbak payload styles:
 
-    Skips SSE comment lines (``:`` …) per the SSE spec.
-    Returns time-to-first-byte (seconds) measured from entry to first chunk push.
+        * Style A: ``event: chunk`` plus ``data: {...}`` (event name discriminates).
+        * Style B: no ``event:`` line; ``data`` JSON uses a ``type`` field.
+
+    Skips SSE comment lines (leading ``:``) per the SSE spec.
+
+    Args:
+        readline: Async callable returning the next line (bytes, CRLF stripped by caller).
+        output_emitter: LiveKit audio sink for decoded PCM.
+
+    Returns:
+        Time-to-first-byte in seconds from first chunk push, or elapsed time if no chunk.
     """
     event: Optional[str] = None
     buf: list[str] = []
@@ -635,7 +744,15 @@ async def _consume_sse_readline(
 
 
 def _is_chunk_event(event: Optional[str], buf: list[str]) -> bool:
-    """Return True if this SSE event looks like an audio chunk (for TTFB tracking)."""
+    """Return whether buffered SSE lines represent an audio chunk (for TTFB).
+
+    Args:
+        event: Current ``event:`` name, if any.
+        buf: Accumulated ``data:`` lines for the pending event.
+
+    Returns:
+        ``True`` if this event should count as the first audio chunk for TTFB.
+    """
     if event == "chunk":
         return True
     if event is None and buf:
@@ -652,10 +769,15 @@ async def _handle_sse_event(
     raw: str,
     output_emitter: tts.AudioEmitter,
 ) -> None:
-    """Decode and dispatch a single SSE event.
+    """Decode one SSE event payload and push PCM or handle terminal states.
 
-    Supports both ``event:``-field discrimination (Style A) and
-    ``{"type": ...}`` payload discrimination (Style B).
+    Args:
+        ev: Event name from ``event:`` (may be ``None`` for Style B).
+        raw: Joined ``data:`` payload (JSON string).
+        output_emitter: LiveKit audio sink.
+
+    Raises:
+        APIError: On invalid JSON, bad base64, or hub ``error`` events.
     """
     try:
         payload = json.loads(raw)

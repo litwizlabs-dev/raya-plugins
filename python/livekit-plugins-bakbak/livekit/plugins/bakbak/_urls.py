@@ -1,4 +1,8 @@
-"""Hub URL normalization, path constants, and joining via :mod:`urllib.parse`."""
+"""Hub URL normalization, path constants, and joining via :mod:`urllib.parse`.
+
+Public constants include ``DEFAULT_HUB_URL`` and path segments such as
+``PATH_TTS_SYNTHESIZE``, ``PATH_TRANSCRIBE``, etc., used to build full endpoint URLs.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,21 @@ PATH_TRANSCRIBE = "/transcribe"
 
 
 def _ensure_absolute_http_url(raw: str) -> str:
+    """Normalize a user-supplied string into an ``http`` or ``https`` URL without query/fragment.
+
+    If no scheme is present, ``https://`` is prepended. Path is trimmed of a trailing
+    slash (except the root).
+
+    Args:
+        raw: User or default hub base string.
+
+    Returns:
+        Normalized URL string (scheme + netloc + path only).
+
+    Raises:
+        ValueError: If the string is empty, the scheme is not ``http``/``https``,
+            or there is no host (``netloc``).
+    """
     s = raw.strip()
     if not s:
         raise ValueError("empty hub URL")
@@ -36,7 +55,22 @@ def resolve_hub_base_url(
     *env_keys: str,
     default: str = DEFAULT_HUB_URL,
 ) -> str:
-    """Pick the first non-empty value from ``explicit`` and ``os.environ[key]`` keys."""
+    """Return the hub base URL from the first non-empty source.
+
+    Tries ``explicit``, then each ``os.environ[key]`` for ``env_keys`` in order.
+    If all are empty, ``default`` is normalized.
+
+    Args:
+        explicit: Optional URL from the caller (e.g. constructor ``base_url``).
+        *env_keys: Environment variable names to consult in order.
+        default: Fallback when every candidate is empty.
+
+    Returns:
+        Normalized base URL without a trailing slash.
+
+    Raises:
+        ValueError: If normalization fails (see :func:`_ensure_absolute_http_url`).
+    """
     candidates = [explicit, *(os.environ.get(k) for k in env_keys)]
     value = next((str(v).strip() for v in candidates if v and str(v).strip()), None)
     if not value:
@@ -47,8 +81,15 @@ def resolve_hub_base_url(
 def hub_url_join(base: str, path: str) -> str:
     """Append ``path`` to ``base`` using :func:`urllib.parse.urljoin`.
 
-    ``path`` may be ``/v1/foo`` or ``v1/foo``; a path prefix on ``base`` is preserved
-    (e.g. ``https://host/api`` + ``/v1/voices`` → ``https://host/api/v1/voices``).
+    Leading slashes on ``path`` are stripped so a path prefix on ``base`` is kept
+    (for example ``https://host/api`` + ``/v1/voices`` → ``https://host/api/v1/voices``).
+
+    Args:
+        base: Hub base URL (with optional path prefix).
+        path: Relative path segment (with or without a leading slash).
+
+    Returns:
+        Absolute URL string.
     """
     rel = path.strip().lstrip("/")
     if not rel:
@@ -58,7 +99,17 @@ def hub_url_join(base: str, path: str) -> str:
 
 
 def http_to_ws_origin(http_url: str) -> str:
-    """Map ``http``/``https`` origin to ``ws``/``wss`` (same host and path, no query)."""
+    """Map an ``http`` or ``https`` URL to ``ws`` or ``wss`` with the same host and path.
+
+    Args:
+        http_url: HTTP(S) hub base; a scheme may be omitted (``https`` is assumed).
+
+    Returns:
+        WebSocket origin URL without query or fragment.
+
+    Raises:
+        ValueError: If the scheme is not ``http``/``https`` or the host is missing.
+    """
     p = urlparse(http_url if "://" in http_url else f"https://{http_url}")
     if p.scheme == "https":
         scheme = "wss"
@@ -73,25 +124,60 @@ def http_to_ws_origin(http_url: str) -> str:
 
 
 def transcribe_http_url(base_url: str) -> str:
-    """``POST`` target for batch STT (multipart WAV)."""
+    """Build the batch STT ``POST`` URL (multipart WAV).
+
+    Args:
+        base_url: Normalized hub base URL.
+
+    Returns:
+        Full ``https://.../transcribe`` URL (path joined per :func:`hub_url_join`).
+    """
     return hub_url_join(base_url, PATH_TRANSCRIBE)
 
 
 def transcribe_ws_url(base_url: str) -> str:
-    """WebSocket URL for streaming STT (base64 WAV per message)."""
+    """Build the streaming STT WebSocket URL.
+
+    Args:
+        base_url: Normalized hub base URL.
+
+    Returns:
+        Full ``wss://.../transcribe`` URL.
+    """
     return hub_url_join(http_to_ws_origin(base_url), PATH_TRANSCRIBE)
 
 
 def tts_synthesize_url(base_url: str) -> str:
-    """Non-streaming TTS synthesis endpoint."""
+    """Build the non-streaming TTS synthesis endpoint URL.
+
+    Args:
+        base_url: Normalized hub base URL.
+
+    Returns:
+        Full URL for ``POST /v1/text-to-speech``.
+    """
     return hub_url_join(base_url, PATH_TTS_SYNTHESIZE)
 
 
 def tts_stream_url(base_url: str) -> str:
-    """Streaming TTS SSE/Web endpoint."""
+    """Build the streaming TTS (SSE) endpoint URL.
+
+    Args:
+        base_url: Normalized hub base URL.
+
+    Returns:
+        Full URL for ``POST /v1/text-to-speech/stream``.
+    """
     return hub_url_join(base_url, PATH_TTS_STREAM)
 
 
 def tts_voices_url(base_url: str) -> str:
-    """Voice list endpoint."""
+    """Build the voice list ``GET`` URL.
+
+    Args:
+        base_url: Normalized hub base URL.
+
+    Returns:
+        Full URL for ``GET /v1/voices``.
+    """
     return hub_url_join(base_url, PATH_TTS_VOICES)

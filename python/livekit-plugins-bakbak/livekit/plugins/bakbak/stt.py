@@ -1,3 +1,5 @@
+"""Bakbak / Raya speech-to-text plugin for LiveKit Agents."""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,6 +35,8 @@ from livekit.agents.utils import AudioBuffer, is_given
 from .log import logger
 from ._client import (
     API_KEY_HEADER,
+    BAKBAK_METRICS_MODEL_STT,
+    BAKBAK_METRICS_PROVIDER,
     post_with_retry,
     raise_for_status,
     resolve_api_key,
@@ -78,6 +82,16 @@ BakbakSTTLanguage = Literal[
 
 
 def _pcm_s16le_to_wav(pcm: bytes, *, sample_rate: int, num_channels: int) -> bytes:
+    """Wrap raw PCM (16-bit signed LE) in a minimal WAV container.
+
+    Args:
+        pcm: Interleaved PCM bytes (16-bit little-endian per sample).
+        sample_rate: Sample rate in Hz.
+        num_channels: Channel count (mono STT uses ``1``).
+
+    Returns:
+        Complete WAV file bytes.
+    """
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(num_channels)
@@ -88,6 +102,14 @@ def _pcm_s16le_to_wav(pcm: bytes, *, sample_rate: int, num_channels: int) -> byt
 
 
 def _speech_language(effective: Optional[str]) -> LanguageCode:
+    """Map optional hub language to a :class:`~livekit.agents.language.LanguageCode`.
+
+    Args:
+        effective: Hub language code, or ``None`` for default.
+
+    Returns:
+        ``LanguageCode("en")`` when ``effective`` is empty; otherwise ``LanguageCode(effective)``.
+    """
     if effective:
         return LanguageCode(effective)
     return LanguageCode("en")
@@ -96,6 +118,21 @@ def _speech_language(effective: Optional[str]) -> LanguageCode:
 def _parse_transcribe_json(
     data: dict[str, object], *, speech_language: LanguageCode
 ) -> stt.SpeechEvent:
+    """Turn a hub JSON object into a final :class:`~livekit.agents.stt.SpeechEvent`.
+
+    Accepts success payloads ``{transcript, status}`` or error shapes with ``detail``.
+
+    Args:
+        data: Parsed JSON object from HTTP or WebSocket.
+        speech_language: Language tag for :class:`~livekit.agents.stt.SpeechData`.
+
+    Returns:
+        A ``FINAL_TRANSCRIPT`` event with a fresh request id.
+
+    Raises:
+        APIStatusError: For error-only payloads (``detail`` without ``transcript``).
+        APIError: For ``status == "error"`` or unexpected ``status`` values.
+    """
     if "detail" in data and "transcript" not in data:
         raise APIStatusError(
             message=str(data.get("detail") or "transcription error"),
@@ -128,6 +165,8 @@ def _parse_transcribe_json(
 
 @dataclass
 class _STTOptions:
+    """Immutable runtime options for :class:`STT` (internal)."""
+
     api_key: str
     base_url: str
     language: Optional[str]
@@ -178,13 +217,16 @@ class STT(stt.STT):
 
     @property
     def model(self) -> str:
-        return "bakbak"
+        """Hub STT model name for LiveKit metrics."""
+        return BAKBAK_METRICS_MODEL_STT
 
     @property
     def provider(self) -> str:
-        return "raya"
+        """Telemetry provider label (``BAKBAK_METRICS_PROVIDER``)."""
+        return BAKBAK_METRICS_PROVIDER
 
     def ensure_session(self) -> aiohttp.ClientSession:
+        """Return a shared :class:`aiohttp.ClientSession`, creating one if needed."""
         if self._session is not None:
             return self._session
         try:
@@ -195,6 +237,7 @@ class STT(stt.STT):
         return self._session
 
     def _effective_language(self, language: NotGivenOr[str]) -> Optional[str]:
+        """Resolve per-call ``language`` override vs instance default."""
         if is_given(language):
             return str(language) if language else None
         return self._opts.language
@@ -206,6 +249,22 @@ class STT(stt.STT):
         language: NotGivenOr[str] = NOT_GIVEN,
         conn_options: APIConnectOptions,
     ) -> stt.SpeechEvent:
+        """Batch transcribe audio via multipart ``POST /transcribe``.
+
+        Args:
+            buffer: One or more mono :class:`~livekit.rtc.AudioFrame` instances.
+            language: Optional per-call language override (``NOT_GIVEN`` uses instance default).
+            conn_options: Connect/retry options from the agent framework.
+
+        Returns:
+            A ``FINAL_TRANSCRIPT`` :class:`~livekit.agents.stt.SpeechEvent`.
+
+        Raises:
+            APIError: If audio is not mono or JSON is invalid.
+            APIStatusError: On HTTP error responses (via :func:`~._client.raise_for_status`).
+            APITimeoutError: If the HTTP request times out (via :func:`~._client.post_with_retry`).
+            APIConnectionError: If POST retries are exhausted.
+        """
         combined = rtc.combine_audio_frames(buffer)
         if combined.num_channels != 1:
             raise APIError(
@@ -256,6 +315,7 @@ class STT(stt.STT):
         language: NotGivenOr[str] = NOT_GIVEN,
         conn_options: APIConnectOptions = DEFAULT_API_CONNECT_OPTIONS,
     ) -> BakbakRecognizeStream:
+        """Open a WebSocket-backed :class:`BakbakRecognizeStream` for streaming STT."""
         s = BakbakRecognizeStream(
             stt=self,
             conn_options=conn_options,
@@ -266,6 +326,7 @@ class STT(stt.STT):
         return s
 
     async def aclose(self) -> None:
+        """Close active recognition streams and any session owned by this instance."""
         if self._streams:
             await asyncio.gather(
                 *(s.aclose() for s in list(self._streams)), return_exceptions=True
@@ -276,6 +337,12 @@ class STT(stt.STT):
 
 
 class BakbakRecognizeStream(stt.RecognizeStream):
+    """Streaming STT over ``wss://.../transcribe`` with one JSON request per flush.
+
+    Buffered mono PCM is wrapped as WAV, base64-encoded, and sent on each
+    :meth:`~livekit.agents.stt.RecognizeStream.flush`. Empty flushes are skipped.
+    """
+
     def __init__(
         self,
         *,
@@ -284,6 +351,7 @@ class BakbakRecognizeStream(stt.RecognizeStream):
         stream_language: Optional[str],
         sample_rate: int,
     ) -> None:
+        """Initialize the stream (internal; use :meth:`STT.stream`)."""
         super().__init__(stt=stt, conn_options=conn_options, sample_rate=sample_rate)
         self._stt_ref: STT = stt
         self._stream_language = stream_language
@@ -292,6 +360,13 @@ class BakbakRecognizeStream(stt.RecognizeStream):
     async def _read_transcribe_response(
         self, ws: aiohttp.ClientWebSocketResponse
     ) -> stt.SpeechEvent:
+        """Read WebSocket text messages until a transcript or error payload arrives.
+
+        Raises:
+            APIConnectionError: If the socket closes or errors before a response.
+            APIError: On malformed JSON.
+            APIStatusError / APIError: From :func:`_parse_transcribe_json`.
+        """
         while True:
             msg = await ws.receive()
             if msg.type in (
@@ -325,6 +400,7 @@ class BakbakRecognizeStream(stt.RecognizeStream):
         )
 
     async def _run(self) -> None:
+        """Main loop: connect WSS, consume input frames, send WAV per flush, emit events."""
         opts = self._stt_ref._opts
         ws_url = transcribe_ws_url(opts.base_url)
         session = self._stt_ref.ensure_session()

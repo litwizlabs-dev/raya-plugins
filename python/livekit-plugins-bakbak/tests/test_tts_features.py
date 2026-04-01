@@ -14,6 +14,7 @@ import pytest
 
 from livekit.agents import APIStatusError
 
+from livekit.plugins.bakbak._client import BAKBAK_METRICS_PROVIDER
 from livekit.plugins.bakbak.tts import DEFAULT_BASE_URL, TTS
 
 
@@ -252,7 +253,7 @@ def test_update_options_invalid_speed(tts_engine: TTS) -> None:
 
 
 def test_provider_and_model(tts_engine: TTS) -> None:
-    assert tts_engine.provider == "Bakbak"
+    assert tts_engine.provider == BAKBAK_METRICS_PROVIDER
     assert tts_engine.model == "standard"
 
 
